@@ -1,48 +1,82 @@
+/*
+  * This is a Bicep file for deploying a VM Image to a Shared Image Gallery using Azure Image Builder
+
+  * Author: Bernhard Fluer
+  * Date: 2023-06-13
+  * Version: 1.0.0
+
+  * Company: Axians ICT Austria GmbH
+  * Website: https://www.axians.at
+  * All rights reserved
+*/
+
+//
+//PARAMETER DECLARATION
+//
+
+@description('Name of the Image to be created')
 param par_NameOfImage string
+@description('Location of the Image to be created')
 param par_Location string
 
+@description('Deploy Shared Image Gallery')
 param par_deploySharedImageGallery bool = true
-param par_sharedImageGalleryName string = 'sig_${par_NameOfImage}'
+@description('Name of the Shared Image Gallery')
+param par_sharedImageGalleryName string = 'sig${par_NameOfImage}'
+
+//
+//VARIABLE DECLARATION
+//
 
 #disable-next-line no-hardcoded-env-urls //is a Blob URL
-var var_BackgroundImage = 'https://axiansvdscripts.blob.core.windows.net/images/Teams_Backgrounds_1920x1080px_BigData.jpg'
+var var_BackgroundImage = 'https://raw.githubusercontent.com/noplacelikecloud/test_imagebuilder/master/source/Teams_Backgrounds_1920x1080px_BigData.jpg'
 
 #disable-next-line no-hardcoded-env-urls //is a Blob URL
-var var_ScriptLockscreenWallpaper = 'https://axiansvdscripts.blob.core.windows.net/scripts/Set-LockWallpaper.ps1'
+var var_ScriptLockscreenWallpaper = 'https://raw.githubusercontent.com/noplacelikecloud/test_imagebuilder/master/source/Set-LockWallpaper.ps1'
 
-
-resource sharedImageGallery 'Microsoft.Compute/galleries@2020-09-30' = if(par_deploySharedImageGallery) {
-  name: par_sharedImageGalleryName
-  location: par_Location
-  properties: {
-    description: 'SharedImageGallery for ${par_NameOfImage}'
-  }
+var var_sourceImage = {
+  type: 'PlatformImage'
+  publisher: 'MicrosoftWindowsServer'
+  offer: 'WindowsServer'
+  sku: '2022-Datacenter'
+  version: 'latest'
 }
 
-var var_sharedImageGalleryResourceId = par_deploySharedImageGallery ? sharedImageGallery.id : resourceId('Microsoft.Compute/galleries', par_sharedImageGalleryName)
+var var_sigImageIdentifier = {
+  publisher: 'NoPlaceLikeCloud'
+  offer: 'VMImage'
+  sku: par_NameOfImage
+}
+
+//
+//DEPLOYMENT
+//
 
 resource managedIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2018-11-30' = {
   name: 'uaid_${par_NameOfImage}'
   location: par_Location
 }
 
-resource res_BuildVirtualNetwork 'Microsoft.Network/virtualNetworks@2019-11-01' = {
-  name: 'build-${par_NameOfImage}'
-  location: par_Location
-  properties: {
-    addressSpace: {
-      addressPrefixes: [
-        '10.0.0.0/28'
-      ]
-    }
-    subnets: [
-      {
-        name: 'ImageCreator'
-        properties: {
-          addressPrefix: '10.0.0.0/28'
-        }
-      }
-    ]
+module SIGDeployment 'modules/SIG.bicep' = {
+  name: 'deploy-SIG'
+  params: {
+    sigName: par_sharedImageGalleryName
+    sigLocation: par_Location
+    sigExists: !par_deploySharedImageGallery
+    sigImageName: par_NameOfImage
+    uaidPrincipalId: managedIdentity.properties.principalId
+    sigImageIdentifier: var_sigImageIdentifier
+  }
+}
+
+module vnet 'modules/vNet.bicep' = {
+  name: 'deploy-VNET'
+  params: {
+    imageName: par_NameOfImage
+    location: par_Location
+    vnetPrefix: '10.0.0.0/28'
+    subnetPrefix: '10.0.0.0/28'
+    uaidId: managedIdentity.properties.principalId
   }
 }
 
@@ -57,13 +91,7 @@ resource res_Image 'Microsoft.VirtualMachineImages/imageTemplates@2022-07-01' = 
     }
   }
   properties: {
-    source: {
-      type: 'PlatformImage'
-      publisher: 'MicrosoftWindowsServer'
-      offer: 'WindowsServer'
-      sku: '2022-Datacenter'
-      version: 'latest'
-    }
+    source: var_sourceImage
     customize: [
       {
         name: 'Install Windows Updates'
@@ -74,15 +102,23 @@ resource res_Image 'Microsoft.VirtualMachineImages/imageTemplates@2022-07-01' = 
         type: 'WindowsRestart'
       }
       {
-        name: 'Copy Lockscreen Wallpaper'
+        name: 'Create Working Dir for AIB'
+        type: 'PowerShell'
+        runElevated: true
+        inline: [
+          'New-Item -Path "C:\\AIB" -ItemType "directory"'
+        ]
+      }
+      {
+        name: 'Download Lockscreen Wallpaper'
         type: 'File'
-        destination: 'C:\\Windows\\Temp'
+        destination: 'C:\\AIB'
         sourceUri: var_BackgroundImage
       }
       {
-        name: 'Upload Script for setting Wallpaper'
+        name: 'Download Script for setting Wallpaper'
         type: 'File'
-        destination: 'C:\\Windows\\Temp'
+        destination: 'C:\\AIB'
         sourceUri: var_ScriptLockscreenWallpaper
       }
       {
@@ -90,14 +126,14 @@ resource res_Image 'Microsoft.VirtualMachineImages/imageTemplates@2022-07-01' = 
         type: 'PowerShell'
         runElevated: true
         inline: [
-          'C:\\Windows\\Temp\\Set-LockWallpaper.ps1 -LockScreenSource "C:\\Windows\\Temp\\Teams_Backgrounds_1920x1080px_BigData.jpg" -BackgroundSource "C:\\Windows\\Temp\\Teams_Backgrounds_1920x1080px_BigData.jpg"'
+          'C:\\AIB\\Set-LockWallpaper.ps1 -LockScreenSource "C:\\AIB\\Teams_Backgrounds_1920x1080px_BigData.jpg" -BackgroundSource "C:\\AIB\\Teams_Backgrounds_1920x1080px_BigData.jpg"'
         ]
       }
     ]
     distribute: [
       {
         type: 'SharedImage'
-        galleryImageId: var_sharedImageGalleryResourceId
+        galleryImageId: SIGDeployment.outputs.imageId
         replicationRegions: [
           'westeurope'
           'northeurope'
@@ -108,7 +144,7 @@ resource res_Image 'Microsoft.VirtualMachineImages/imageTemplates@2022-07-01' = 
     vmProfile: {
       vmSize: 'Standard_D2s_v3'
       vnetConfig: {
-        subnetId: res_BuildVirtualNetwork.properties.subnets[0].id
+        subnetId: vnet.outputs.snetId
       }
     }
   }
