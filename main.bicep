@@ -112,13 +112,13 @@ resource res_Image 'Microsoft.VirtualMachineImages/imageTemplates@2022-07-01' = 
       {
         name: 'Download Lockscreen Wallpaper'
         type: 'File'
-        destination: 'C:\\AIB'
+        destination: 'C:\\AIB\\Teams_Backgrounds_1920x1080px_BigData.jpg'
         sourceUri: var_BackgroundImage
       }
       {
         name: 'Download Script for setting Wallpaper'
         type: 'File'
-        destination: 'C:\\AIB'
+        destination: 'C:\\AIB\\Set-LockWallpaper.ps1'
         sourceUri: var_ScriptLockscreenWallpaper
       }
       {
